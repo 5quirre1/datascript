@@ -1,0 +1,8 @@
+create PeakPeople id:int name:string peakLevel:int
+
+add PeakPeople id=1 name=nomaakip peakLevel=7
+add PeakPeople id=2 name=names peakLevel=7
+add PeakPeople id=3 name=wish peakLevel=7
+add PeakPeople id=4 name=hyper peakLevel=100000000
+
+show PeakPeople
