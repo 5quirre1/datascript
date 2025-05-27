@@ -333,11 +333,26 @@ namespace DataScript
             );
         }
     }
+    public class VariableInfo
+    {
+        public Type DataType { get; }
+        public object Value { get; set; }
+        public bool IsConst { get; }
+        public VariableInfo(Type dataType, object value, bool isConst)
+        {
+            DataType = dataType;
+            Value = value;
+            IsConst = isConst;
+        }
+    }
 
     public class DataScriptInterpreter
     {
         private DataSet _dataSet = new DataSet();
-        private Dictionary<string, object> _variables = new Dictionary<string, object>();
+        private Dictionary<string, VariableInfo> _variables = new Dictionary<
+            string,
+            VariableInfo
+        >();
 
         private readonly Dictionary<string, Func<string[], object>> _commands = new Dictionary<
             string,
@@ -368,37 +383,142 @@ namespace DataScript
             _commands["avg"] = AverageColumn;
             _commands["min"] = MinColumn;
             _commands["max"] = MaxColumn;
+            _commands["let"] = VariableDeclCommand;
+            _commands["const"] = VariableDeclCommand;
+            _commands["var"] = VariableDeclCommand;
+            _commands["set"] = VariableAssignCommand;
+            _commands["update"] = UpdateRowsCommand;
+            _commands["delete"] = DeleteRowsCommand;
+            _commands["describe"] = DescribeTableCommand;
+            _commands["groupby"] = GroupByCommand;
             _commands["show"] = args =>
-              {
-                  if (args.Length < 1)
-                      throw new ArgumentException(
-                          "usage: show \"text\" or show 'text' or show \"tableName\""
-                      );
+            {
+                if (args.Length < 1)
+                    throw new ArgumentException(
+                        "usage: show \"text\" or show 'text' or show \"tableName\""
+                    );
 
-                  var text = args[0];
+                var text = args[0];
 
-                  if (_dataSet.TableExists(text))
-                  {
-                      return ShowTable(args);
-                  }
+                if (_dataSet.TableExists(text))
+                {
+                    return ShowTable(args);
+                }
 
-                  var isDoubleQuoted = text.StartsWith("\"") && text.EndsWith("\"");
-                  var isSingleQuoted = text.StartsWith("'") && text.EndsWith("'");
+                var isDoubleQuoted = text.StartsWith("\"") && text.EndsWith("\"");
+                var isSingleQuoted = text.StartsWith("'") && text.EndsWith("'");
 
-                  if (!isDoubleQuoted && !isSingleQuoted)
-                  {
-                      throw new ArgumentException(
-                          "text values must be quoted. Use: show \"text\" or show 'text'"
-                      );
-                  }
+                if (!isDoubleQuoted && !isSingleQuoted)
+                {
+                    throw new ArgumentException(
+                        "text values must be quoted. Use: show \"text\" or show 'text'"
+                    );
+                }
 
-                  var unquoted = text.Substring(1, text.Length - 2);
-                  var fullText =
-                      args.Length > 1 ? unquoted + " " + string.Join(" ", args.Skip(1)) : unquoted;
+                var unquoted = text.Substring(1, text.Length - 2);
+                var fullText =
+                    args.Length > 1 ? unquoted + " " + string.Join(" ", args.Skip(1)) : unquoted;
 
-                  Console.WriteLine(fullText.Replace("\\n", "\n"));
-                  return null;
-              };
+                string replaced = System.Text.RegularExpressions.Regex.Replace(
+                    fullText,
+                    @"\$\(?([A-Za-z_][A-Za-z0-9_]*)\)?",
+                    m =>
+                    {
+                        string varName = m.Groups[1].Value;
+                        if (
+                            _variables.TryGetValue(varName, out var varInfo)
+                            && varInfo.Value != null
+                        )
+                            return varInfo.Value.ToString();
+                        else
+                            return m.Value;
+                    }
+                );
+
+                Console.WriteLine(replaced.Replace("\\n", "\n"));
+                return null;
+            };
+        }
+
+        private object VariableDeclCommand(string[] args)
+        {
+            if (args.Length < 3)
+                throw new ArgumentException("usage: let|var|const [name[:type]] = value");
+
+            string decl = args[0];
+            string name,
+                typeName = null;
+            Type type = null;
+            bool isConst = false;
+            if (args.Length > 2 && args[1].StartsWith("="))
+            {
+                name = decl;
+            }
+            else
+            {
+                var parts = decl.Split(':');
+                name = parts[0];
+                if (parts.Length > 1)
+                    typeName = parts[1];
+            }
+
+            if (typeName != null)
+            {
+                type = typeName.ToLower() switch
+                {
+                    "int" => typeof(int),
+                    "decimal" => typeof(decimal),
+                    "string" => typeof(string),
+                    "bool" => typeof(bool),
+                    _ => throw new ArgumentException($"unknown type: {typeName}")
+                };
+            }
+
+            int eqIndex = Array.IndexOf(args, "=");
+            if (eqIndex == -1 || eqIndex == args.Length - 1)
+                throw new ArgumentException("missing assignment (= value)");
+
+            var valueStr = string.Join(" ", args.Skip(eqIndex + 1));
+            object value;
+
+            if (
+                valueStr.StartsWith("\"") && valueStr.EndsWith("\"")
+                || valueStr.StartsWith("'") && valueStr.EndsWith("'")
+            )
+            {
+                value = valueStr.Substring(1, valueStr.Length - 2);
+                if (type == null)
+                    type = typeof(string);
+            }
+            else if (type != null)
+            {
+                value = Convert.ChangeType(valueStr, type);
+            }
+            else if (int.TryParse(valueStr, out int intVal))
+            {
+                value = intVal;
+                type = typeof(int);
+            }
+            else if (decimal.TryParse(valueStr, out decimal decVal))
+            {
+                value = decVal;
+                type = typeof(decimal);
+            }
+            else if (bool.TryParse(valueStr, out bool boolVal))
+            {
+                value = boolVal;
+                type = typeof(bool);
+            }
+            else
+            {
+                value = valueStr;
+                type = typeof(string);
+            }
+
+            isConst = string.Equals(args[0], "const", StringComparison.OrdinalIgnoreCase);
+            _variables[name] = new VariableInfo(type, value, isConst);
+
+            return $"variable {name} set to {value} ({type.Name})";
         }
 
         public void ExecuteFile(string filePath)
@@ -418,6 +538,55 @@ namespace DataScript
             {
                 Console.WriteLine($"error executing: {ex.Message}");
             }
+        }
+
+        private object VariableAssignCommand(string[] args)
+        {
+            if (args.Length < 3 || args[1] != "=")
+                throw new ArgumentException("usage: set [name] = value");
+
+            string name = args[0];
+            if (!_variables.ContainsKey(name))
+                throw new ArgumentException($"variable {name} is not defined");
+
+            var info = _variables[name];
+            if (info.IsConst)
+                throw new InvalidOperationException(
+                    $"variable {name} is const and cannot be reassigned"
+                );
+
+            var valueStr = string.Join(" ", args.Skip(2));
+            object value;
+
+            if (
+                info.DataType == typeof(string)
+                && (
+                    valueStr.StartsWith("\"") && valueStr.EndsWith("\"")
+                    || valueStr.StartsWith("'") && valueStr.EndsWith("'")
+                )
+            )
+            {
+                value = valueStr.Substring(1, valueStr.Length - 2);
+            }
+            else if (info.DataType == typeof(int))
+            {
+                value = int.Parse(valueStr);
+            }
+            else if (info.DataType == typeof(decimal))
+            {
+                value = decimal.Parse(valueStr);
+            }
+            else if (info.DataType == typeof(bool))
+            {
+                value = bool.Parse(valueStr);
+            }
+            else
+            {
+                value = valueStr;
+            }
+
+            info.Value = value;
+            return $"variable {name} set to {value}";
         }
 
         public object Execute(string scriptText)
@@ -1398,6 +1567,211 @@ namespace DataScript
             var max = values.Max();
             return $"max of {columnName}: {max}";
         }
+        private object UpdateRowsCommand(string[] args)
+        {
+            if (args.Length < 4)
+                throw new ArgumentException(
+                    "usage: update [table] set [col=val ...] where [conditions ...]"
+                );
+
+            var tableName = args[0];
+            var table = _dataSet[tableName];
+            if (table == null)
+                throw new ArgumentException($"table not found: {tableName}");
+
+            int setIdx = Array.IndexOf(args, "set");
+            int whereIdx = Array.IndexOf(args, "where");
+
+            if (setIdx == -1 || whereIdx == -1 || setIdx > whereIdx)
+                throw new ArgumentException(
+                    "usage: update [table] set [col=val ...] where [conditions ...]"
+                );
+
+            var assignments = new Dictionary<string, string>();
+            for (int i = setIdx + 1; i < whereIdx; i++)
+            {
+                var parts = args[i].Split(new[] { '=' }, 2);
+                if (parts.Length != 2)
+                    throw new ArgumentException($"invalid assignment: {args[i]}");
+                assignments[parts[0]] = parts[1];
+            }
+
+            var condArgs = new List<string> { tableName };
+            condArgs.AddRange(args.Skip(whereIdx + 1));
+            var filterTable = FilterData(condArgs.ToArray()) as DataTable;
+            if (filterTable == null)
+                return "no rows matched";
+
+            int updateCount = 0;
+            foreach (var row in table.Rows)
+            {
+                if (filterTable.Rows.Contains(row))
+                {
+                    foreach (var kvp in assignments)
+                    {
+                        var colName = kvp.Key;
+                        var valRaw = kvp.Value;
+                        if (!table.Columns.TryGetValue(colName, out var column))
+                            throw new ArgumentException($"column {colName} not found");
+
+                        object value;
+                        if (column.DataType == typeof(string))
+                        {
+                            if (
+                                (valRaw.StartsWith("\"") && valRaw.EndsWith("\""))
+                                || (valRaw.StartsWith("'") && valRaw.EndsWith("'"))
+                            )
+                                value = valRaw.Substring(1, valRaw.Length - 2);
+                            else
+                                value = valRaw;
+                        }
+                        else
+                        {
+                            value = Convert.ChangeType(valRaw, column.DataType);
+                        }
+                        row[colName] = value;
+                    }
+                    updateCount++;
+                }
+            }
+            return $"updated {updateCount} row(s)";
+        }
+        private object DeleteRowsCommand(string[] args)
+        {
+            if (args.Length < 3 || args[1] != "where")
+                throw new ArgumentException("usage: delete [tableName] where [conditions ...]");
+
+            var tableName = args[0];
+            var table = _dataSet[tableName];
+            if (table == null)
+                throw new ArgumentException($"table not found: {tableName}");
+
+            var condArgs = new List<string> { tableName };
+            condArgs.AddRange(args.Skip(2));
+            var filterTable = FilterData(condArgs.ToArray()) as DataTable;
+            if (filterTable == null)
+                return "no rows matched";
+
+            var toRemove = new HashSet<DataRow>(filterTable.Rows);
+            int before = table.Rows.Count;
+            table.Rows.RemoveAll(row => toRemove.Contains(row));
+            int after = table.Rows.Count;
+            return $"deleted {before - after} row(s)";
+        }
+
+        private object DescribeTableCommand(string[] args)
+        {
+            if (args.Length < 1)
+                throw new ArgumentException("usage: describe [tableName]");
+
+            var tableName = args[0];
+            var table = _dataSet[tableName];
+            if (table == null)
+                throw new ArgumentException($"table not found: {tableName}");
+
+            Console.WriteLine($"Table: {tableName}");
+            Console.WriteLine($"Rows: {table.Rows.Count}");
+            Console.WriteLine($"Columns:");
+            foreach (var col in table.Columns.Values)
+            {
+                var values = table.Rows.Select(r => r[col.Name]).Take(3).ToArray();
+                string sample = string.Join(", ", values.Select(v => v?.ToString() ?? "null"));
+                Console.WriteLine(
+                    $"- {col.Name} ({col.DataType.Name}) default={col.DefaultValue ?? "null"} sample=[{sample}]"
+                );
+            }
+            return null;
+        }
+
+        private object GroupByCommand(string[] args)
+        {
+            if (args.Length < 2)
+                throw new ArgumentException(
+                    "usage: groupby [tableName] [byCol1] [byCol2] ... [agg=col] ..."
+                );
+
+            var tableName = args[0];
+            var table = _dataSet[tableName];
+            if (table == null)
+                throw new ArgumentException($"table not found: {tableName}");
+
+            var byCols = new List<string>();
+            var aggs = new List<(string agg, string col)>();
+
+            for (int i = 1; i < args.Length; i++)
+            {
+                var arg = args[i];
+                if (arg.Contains("="))
+                {
+                    var parts = arg.Split('=');
+                    aggs.Add((parts[0].ToLower(), parts[1]));
+                }
+                else
+                {
+                    byCols.Add(arg);
+                }
+            }
+            if (byCols.Count == 0)
+                throw new ArgumentException("must specify at least one grouping column");
+
+            var result = new DataTable($"{tableName}_grouped");
+            foreach (var by in byCols)
+            {
+                if (!table.Columns.ContainsKey(by))
+                    throw new ArgumentException($"column not found: {by}");
+                result.AddColumn(by, table.Columns[by].DataType);
+            }
+
+            foreach (var (agg, col) in aggs)
+            {
+                string colName = $"{agg}_{col}";
+                result.AddColumn(colName, typeof(decimal));
+            }
+
+            var groups = table.Rows.GroupBy(
+                row => string.Join("|", byCols.Select(by => row[by]?.ToString() ?? ""))
+            );
+            foreach (var group in groups)
+            {
+                var newRow = result.NewRow();
+                var firstRow = group.First();
+                foreach (var by in byCols)
+                    newRow[by] = firstRow[by];
+
+                foreach (var (agg, col) in aggs)
+                {
+                    var values = group
+                        .Select(r => r[col])
+                        .Where(v => v != null)
+                        .Select(Convert.ToDecimal)
+                        .ToList();
+                    decimal aggVal = 0;
+                    switch (agg)
+                    {
+                        case "sum":
+                            aggVal = values.Sum();
+                            break;
+                        case "avg":
+                            aggVal = values.Count == 0 ? 0 : values.Average();
+                            break;
+                        case "min":
+                            aggVal = values.Count == 0 ? 0 : values.Min();
+                            break;
+                        case "max":
+                            aggVal = values.Count == 0 ? 0 : values.Max();
+                            break;
+                        case "count":
+                            aggVal = group.Count();
+                            break;
+                        default:
+                            throw new ArgumentException($"unsupported aggregation: {agg}");
+                    }
+                    newRow[$"{agg}_{col}"] = aggVal;
+                }
+                result.Rows.Add(newRow);
+            }
+            return result;
+        }
     }
 
     public static class Program
@@ -1428,8 +1802,8 @@ namespace DataScript
             {
                 var script =
                     @"
-      			show 'hello world!'
-         	     ";
+      show 'hello world!'
+         ";
 
                 interpreter.Execute(script);
             }
