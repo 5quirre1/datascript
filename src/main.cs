@@ -1429,8 +1429,8 @@ namespace DataScript
             {
                 var script =
                     @"
-						show 'hello world!'
-			     ";
+			show 'hello world!'
+		     ";
 
                 interpreter.Execute(script);
             }
