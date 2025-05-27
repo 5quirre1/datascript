@@ -1,0 +1,30 @@
+// @created: 5/27/25
+// @author: 5quirre1
+
+// create users table
+create users id:int name:string age:int active:bool
+
+// add some users
+add users id=1 name='John doe' age=30 active=true
+add users id=2 name='Greg' age=25 active=true
+add users id=3 name='Kyle' age=35 active=false
+
+// show all users
+show users
+
+// only show active users
+show 'active users:'
+filter users active = true
+
+// only show users over 25
+show 'users over 25:'
+filter users age > 25
+
+// find average age
+avg users age
+
+// sort users by name
+show 'users sorted by name:'
+sort users name asc
+
+// well so yea new update and stuff!!!
