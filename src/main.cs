@@ -1383,7 +1383,7 @@ namespace DataScript
             {
                 string scriptPath = args[0];
                 if (
-                    Path.GetExtension(scriptPath) == ".ds"
+                    Path.GetExtension(scriptPath) == ".dscript"
                     || Path.GetExtension(scriptPath) == ".txt"
                 )
                 {
@@ -1394,7 +1394,7 @@ namespace DataScript
                     Console.WriteLine(
                         $"unsupported file extension: {Path.GetExtension(scriptPath)}"
                     );
-                    Console.WriteLine("supported extensions: .ds, .txt");
+                    Console.WriteLine("supported extensions: .dscript, .txt");
                 }
             }
             else
