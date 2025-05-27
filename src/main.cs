@@ -111,6 +111,177 @@ namespace DataScript
             return result;
         }
 
+        public DataTable Distinct(params string[] columnNames)
+        {
+            var result = new DataTable($"{Name}_distinct");
+
+            var cols = columnNames.Length > 0 ? columnNames : Columns.Keys.ToArray();
+
+            foreach (var col in cols)
+            {
+                if (Columns.TryGetValue(col, out var column))
+                {
+                    result.AddColumn(col, column.DataType, column.DefaultValue);
+                }
+            }
+
+            var distinctRows = Rows
+                .GroupBy(row => string.Join("|", cols.Select(c => row[c]?.ToString() ?? "NULL")))
+                .Select(group => group.First());
+
+            foreach (var row in distinctRows)
+            {
+                var newRow = result.NewRow();
+                foreach (var col in cols)
+                {
+                    newRow[col] = row[col];
+                }
+                result.Rows.Add(newRow);
+            }
+
+            return result;
+        }
+
+        public DataTable Union(DataTable other)
+        {
+            if (Columns.Count != other.Columns.Count)
+                throw new ArgumentException("tables must have same number of columns for union");
+
+            var result = new DataTable($"{Name}_union_{other.Name}");
+
+            foreach (var col in Columns.Values)
+            {
+                result.AddColumn(col.Name, col.DataType, col.DefaultValue);
+            }
+
+            result.Rows.AddRange(Rows.Select(r => CopyRow(r, result)));
+            result.Rows.AddRange(other.Rows.Select(r => CopyRow(r, result)));
+
+            return result;
+        }
+
+        public DataTable Intersect(DataTable other)
+        {
+            if (Columns.Count != other.Columns.Count)
+                throw new ArgumentException("tables must have same number of columns for intersect");
+
+            var result = new DataTable($"{Name}_intersect_{other.Name}");
+
+            foreach (var col in Columns.Values)
+            {
+                result.AddColumn(col.Name, col.DataType, col.DefaultValue);
+            }
+
+            var thisRows = Rows.Select(r => RowToString(r)).ToHashSet();
+
+            foreach (var row in other.Rows)
+            {
+                if (thisRows.Contains(RowToString(row)))
+                {
+                    result.Rows.Add(CopyRow(row, result));
+                }
+            }
+
+            return result;
+        }
+
+        public DataTable Except(DataTable other)
+        {
+            if (Columns.Count != other.Columns.Count)
+                throw new ArgumentException("tables must have same number of columns for except");
+
+            var result = new DataTable($"{Name}_except_{other.Name}");
+
+            foreach (var col in Columns.Values)
+            {
+                result.AddColumn(col.Name, col.DataType, col.DefaultValue);
+            }
+
+            var otherRows = other.Rows.Select(r => RowToString(r)).ToHashSet();
+
+            foreach (var row in Rows)
+            {
+                if (!otherRows.Contains(RowToString(row)))
+                {
+                    result.Rows.Add(CopyRow(row, result));
+                }
+            }
+
+            return result;
+        }
+
+        public DataTable Pivot(string rowKeyColumn, string columnKeyColumn, string valueColumn)
+        {
+            if (!Columns.ContainsKey(rowKeyColumn) ||
+                !Columns.ContainsKey(columnKeyColumn) ||
+                !Columns.ContainsKey(valueColumn))
+                throw new ArgumentException("one or more specified columns don't exist");
+
+            var result = new DataTable($"{Name}_pivoted");
+            result.AddColumn(rowKeyColumn, Columns[rowKeyColumn].DataType);
+
+            var columnKeys = Rows
+                .Select(r => r[columnKeyColumn]?.ToString() ?? "NULL")
+                .Distinct()
+                .OrderBy(k => k);
+
+            foreach (var key in columnKeys)
+            {
+                result.AddColumn(key, Columns[valueColumn].DataType);
+            }
+
+            var groups = Rows.GroupBy(r => r[rowKeyColumn]);
+            foreach (var group in groups)
+            {
+                var newRow = result.NewRow();
+                newRow[rowKeyColumn] = group.Key;
+
+                foreach (var row in group)
+                {
+                    var colKey = row[columnKeyColumn]?.ToString() ?? "NULL";
+                    newRow[colKey] = row[valueColumn];
+                }
+
+                result.Rows.Add(newRow);
+            }
+
+            return result;
+        }
+
+        public DataTable Limit(int count, int offset = 0)
+        {
+            var result = new DataTable($"{Name}_limit_{count}_offset_{offset}");
+
+            foreach (var col in Columns.Values)
+            {
+                result.AddColumn(col.Name, col.DataType, col.DefaultValue);
+            }
+
+            var limitedRows = Rows.Skip(offset).Take(count);
+            foreach (var row in limitedRows)
+            {
+                result.Rows.Add(CopyRow(row, result));
+            }
+
+            return result;
+        }
+
+        private DataRow CopyRow(DataRow source, DataTable targetTable)
+        {
+            var newRow = targetTable.NewRow();
+            foreach (var kvp in source.Values)
+            {
+                newRow[kvp.Key] = kvp.Value;
+            }
+            return newRow;
+        }
+
+        private string RowToString(DataRow row)
+        {
+            return string.Join("|", row.Values.OrderBy(kvp => kvp.Key)
+                .Select(kvp => kvp.Value?.ToString() ?? "NULL"));
+        }
+
         public override string ToString()
         {
             var columnsList = string.Join(", ", Columns.Keys);
@@ -391,6 +562,13 @@ namespace DataScript
             _commands["delete"] = DeleteRowsCommand;
             _commands["describe"] = DescribeTableCommand;
             _commands["groupby"] = GroupByCommand;
+            _commands["string"] = StringCommand;
+            _commands["distinct"] = DistinctCommand;
+            _commands["union"] = UnionCommand;
+            _commands["intersect"] = IntersectCommand;
+            _commands["except"] = ExceptCommand;
+            _commands["pivot"] = PivotCommand;
+            _commands["limit"] = LimitCommand;
             _commands["show"] = args =>
             {
                 if (args.Length < 1)
@@ -421,7 +599,7 @@ namespace DataScript
 
                 string replaced = System.Text.RegularExpressions.Regex.Replace(
                     fullText,
-                    @"\$\(?([A-Za-z_][A-Za-z0-9_]*)\)?",
+                    @"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?",
                     m =>
                     {
                         string varName = m.Groups[1].Value;
@@ -450,17 +628,12 @@ namespace DataScript
                 typeName = null;
             Type type = null;
             bool isConst = false;
-            if (args.Length > 2 && args[1].StartsWith("="))
-            {
-                name = decl;
-            }
-            else
-            {
-                var parts = decl.Split(':');
-                name = parts[0];
-                if (parts.Length > 1)
-                    typeName = parts[1];
-            }
+
+            var parts = decl.Split(':');
+            name = parts[0];
+
+            if (parts.Length > 1)
+                typeName = parts[1];
 
             if (typeName != null)
             {
@@ -481,7 +654,24 @@ namespace DataScript
             var valueStr = string.Join(" ", args.Skip(eqIndex + 1));
             object value;
 
-            if (
+            if (valueStr.TrimStart().StartsWith("string "))
+            {
+                var stringCommand = valueStr.Trim();
+                var stringParts = SplitCommand(stringCommand);
+                var command = stringParts[0].ToLower();
+                if (_commands.TryGetValue(command, out var handler))
+                    value = handler(stringParts.Skip(1).ToArray());
+                else
+                    throw new ArgumentException(
+                        $"unknown command in variable assignment: {command}"
+                    );
+
+                if (type == null && value != null)
+                    type = value.GetType();
+                else if (type != null && value != null && value.GetType() != type)
+                    value = Convert.ChangeType(value, type);
+            }
+            else if (
                 valueStr.StartsWith("\"") && valueStr.EndsWith("\"")
                 || valueStr.StartsWith("'") && valueStr.EndsWith("'")
             )
@@ -558,7 +748,20 @@ namespace DataScript
             var valueStr = string.Join(" ", args.Skip(2));
             object value;
 
-            if (
+            if (valueStr.TrimStart().StartsWith("string "))
+            {
+                var stringCommand = valueStr.Trim();
+                var stringParts = SplitCommand(stringCommand);
+                var command = stringParts[0].ToLower();
+                if (_commands.TryGetValue(command, out var handler))
+                    value = handler(stringParts.Skip(1).ToArray());
+                else
+                    throw new ArgumentException($"unknown command in assignment: {command}");
+
+                if (info.DataType != null && value.GetType() != info.DataType)
+                    value = Convert.ChangeType(value, info.DataType);
+            }
+            else if (
                 info.DataType == typeof(string)
                 && (
                     valueStr.StartsWith("\"") && valueStr.EndsWith("\"")
@@ -1772,6 +1975,172 @@ namespace DataScript
             }
             return result;
         }
+        public static class StringOps
+        {
+            public static object Invoke(string method, string input, string[] args = null)
+            {
+                switch (method.ToLower())
+                {
+                    case "toupper":
+                    case "touppercase":
+                        return input?.ToUpper();
+                    case "tolower":
+                    case "tolowercase":
+                        return input?.ToLower();
+                    case "trim":
+                        return input?.Trim();
+                    case "length":
+                        return input?.Length ?? 0;
+                    case "substring":
+                        {
+                            if (args == null || args.Length == 0)
+                                throw new ArgumentException("substring requires at least one argument");
+                            var start = int.Parse(args[0]);
+                            if (args.Length == 1)
+                                return input?.Substring(start);
+                            var len = int.Parse(args[1]);
+                            return input?.Substring(start, len);
+                        }
+                    case "replace":
+                        {
+                            if (args == null || args.Length < 2)
+                                throw new ArgumentException("replace requires two arguments");
+                            return input?.Replace(args[0], args[1]);
+                        }
+                    case "startswith":
+                        {
+                            if (args == null || args.Length < 1)
+                                throw new ArgumentException("startswith requires one argument");
+                            return input?.StartsWith(args[0]) ?? false;
+                        }
+                    case "endswith":
+                        {
+                            if (args == null || args.Length < 1)
+                                throw new ArgumentException("endswith requires one argument");
+                            return input?.EndsWith(args[0]) ?? false;
+                        }
+                    case "contains":
+                        {
+                            if (args == null || args.Length < 1)
+                                throw new ArgumentException("contains requires one argument");
+                            return input?.Contains(args[0]) ?? false;
+                        }
+                    default:
+                        throw new NotSupportedException($"String method not supported: {method}");
+                }
+            }
+        }
+
+        private object StringCommand(string[] args)
+        {
+            if (args.Length < 2)
+                throw new ArgumentException("usage: string [operation] [input] [arg1] [arg2] ...");
+
+            var operation = args[0];
+            var inputRaw = args[1];
+
+            string input;
+            if (
+                (inputRaw.StartsWith("\"") && inputRaw.EndsWith("\""))
+                || (inputRaw.StartsWith("'") && inputRaw.EndsWith("'"))
+            )
+                input = inputRaw.Substring(1, inputRaw.Length - 2);
+            else if (_variables.TryGetValue(inputRaw, out var varInfo) && varInfo.Value is string s)
+                input = s;
+            else
+                input = inputRaw;
+
+            var opArgs = args.Length > 2 ? args[2..] : Array.Empty<string>();
+            return StringOps.Invoke(operation, input, opArgs);
+        }
+        private object DistinctCommand(string[] args)
+        {
+            if (args.Length < 1)
+                throw new ArgumentException("usage: distinct [tableName] [column1] [column2] ...");
+
+            var tableName = args[0];
+            var table = _dataSet[tableName];
+            if (table == null)
+                throw new ArgumentException($"table not found: {tableName}");
+
+            var columns = args.Skip(1).ToArray();
+            return table.Distinct(columns);
+        }
+
+        private object UnionCommand(string[] args)
+        {
+            if (args.Length < 2)
+                throw new ArgumentException("usage: union [table1] [table2]");
+
+            var table1 = _dataSet[args[0]];
+            var table2 = _dataSet[args[1]];
+
+            if (table1 == null || table2 == null)
+                throw new ArgumentException("One or both tables not found");
+
+            return table1.Union(table2);
+        }
+
+        private object IntersectCommand(string[] args)
+        {
+            if (args.Length < 2)
+                throw new ArgumentException("usage: intersect [table1] [table2]");
+
+            var table1 = _dataSet[args[0]];
+            var table2 = _dataSet[args[1]];
+
+            if (table1 == null || table2 == null)
+                throw new ArgumentException("One or both tables not found");
+
+            return table1.Intersect(table2);
+        }
+
+        private object ExceptCommand(string[] args)
+        {
+            if (args.Length < 2)
+                throw new ArgumentException("usage: except [table1] [table2]");
+
+            var table1 = _dataSet[args[0]];
+            var table2 = _dataSet[args[1]];
+
+            if (table1 == null || table2 == null)
+                throw new ArgumentException("One or both tables not found");
+
+            return table1.Except(table2);
+        }
+
+        private object PivotCommand(string[] args)
+        {
+            if (args.Length < 4)
+                throw new ArgumentException("usage: pivot [table] [rowKeyColumn] [columnKeyColumn] [valueColumn]");
+
+            var tableName = args[0];
+            var table = _dataSet[tableName];
+            if (table == null)
+                throw new ArgumentException($"table not found: {tableName}");
+
+            return table.Pivot(args[1], args[2], args[3]);
+        }
+
+        private object LimitCommand(string[] args)
+        {
+            if (args.Length < 2)
+                throw new ArgumentException("usage: limit [tableName] [count] [offset]");
+
+            var tableName = args[0];
+            var table = _dataSet[tableName];
+            if (table == null)
+                throw new ArgumentException($"table not found: {tableName}");
+
+            if (!int.TryParse(args[1], out int count))
+                throw new ArgumentException("count must be an integer");
+
+            int offset = 0;
+            if (args.Length > 2 && !int.TryParse(args[2], out offset))
+                throw new ArgumentException("offset must be an integer");
+
+            return table.Limit(count, offset);
+        }
     }
 
     public static class Program
@@ -1810,3 +2179,4 @@ namespace DataScript
         }
     }
 }
+
