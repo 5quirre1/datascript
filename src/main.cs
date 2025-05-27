@@ -368,38 +368,37 @@ namespace DataScript
             _commands["avg"] = AverageColumn;
             _commands["min"] = MinColumn;
             _commands["max"] = MaxColumn;
-
             _commands["show"] = args =>
-            {
-                if (args.Length < 1)
-                    throw new ArgumentException(
-                        "usage: show \"text\" or show 'text' or show \"tableName\""
-                    );
+              {
+                  if (args.Length < 1)
+                      throw new ArgumentException(
+                          "usage: show \"text\" or show 'text' or show \"tableName\""
+                      );
 
-                var text = args[0];
+                  var text = args[0];
 
-                if (_dataSet.TableExists(text))
-                {
-                    return ShowTable(args);
-                }
+                  if (_dataSet.TableExists(text))
+                  {
+                      return ShowTable(args);
+                  }
 
-                var isDoubleQuoted = text.StartsWith("\"") && text.EndsWith("\"");
-                var isSingleQuoted = text.StartsWith("'") && text.EndsWith("'");
+                  var isDoubleQuoted = text.StartsWith("\"") && text.EndsWith("\"");
+                  var isSingleQuoted = text.StartsWith("'") && text.EndsWith("'");
 
-                if (!isDoubleQuoted && !isSingleQuoted)
-                {
-                    throw new ArgumentException(
-                        "text values must be quoted. Use: show \"text\" or show 'text'"
-                    );
-                }
+                  if (!isDoubleQuoted && !isSingleQuoted)
+                  {
+                      throw new ArgumentException(
+                          "text values must be quoted. Use: show \"text\" or show 'text'"
+                      );
+                  }
 
-                var unquoted = text.Substring(1, text.Length - 2);
-                var fullText =
-                    args.Length > 1 ? unquoted + " " + string.Join(" ", args.Skip(1)) : unquoted;
+                  var unquoted = text.Substring(1, text.Length - 2);
+                  var fullText =
+                      args.Length > 1 ? unquoted + " " + string.Join(" ", args.Skip(1)) : unquoted;
 
-                Console.WriteLine(fullText);
-                return null;
-            };
+                  Console.WriteLine(fullText.Replace("\\n", "\n"));
+                  return null;
+              };
         }
 
         public void ExecuteFile(string filePath)
@@ -1429,8 +1428,8 @@ namespace DataScript
             {
                 var script =
                     @"
-			show 'hello world!'
-		     ";
+      			show 'hello world!'
+         	     ";
 
                 interpreter.Execute(script);
             }
