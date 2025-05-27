@@ -1,32 +1,3 @@
-/*
- *  datascript - a coding language for data
- *
- *  this was made for fun so it's gonna be bad so yea lol
- *
- *
- *  MIT License
- *  Copyright (c) 2025 Squirrel
- *
- *  Permission is hereby granted, free of charge, to any person obtaining a copy
- *  of this software and associated documentation files (the "Software"), to deal
- *  in the Software without restriction, including without limitation the rights
- *  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- *  copies of the Software, and to permit persons to whom the Software is
- *  furnished to do so, subject to the following conditions:
- *
- *  The above copyright notice and this permission notice shall be included in all
- *  copies or substantial portions of the Software.
- *
- *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- *  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- *  SOFTWARE.
- */
-
-
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -171,7 +142,7 @@ namespace DataScript
 
         public override string ToString()
         {
-            return $"row in {_table.Name}: {string.Join(", ", Values.Select(kv => $"{kv.Key}={kv.Value}"))}";
+            return $"row in {_table.Name}: {string.Join(", ", Values.Select(kv => $" {kv.Key}= {kv.Value}"))}";
         }
     }
 
@@ -369,6 +340,38 @@ namespace DataScript
             _commands["avg"] = AverageColumn;
             _commands["min"] = MinColumn;
             _commands["max"] = MaxColumn;
+
+            _commands["show"] = args =>
+            {
+                if (args.Length < 1)
+                    throw new ArgumentException(
+                        "usage: show \"text\" or show 'text' or show \"tableName\""
+                    );
+
+                var text = args[0];
+
+                if (_dataSet.TableExists(text))
+                {
+                    return ShowTable(args);
+                }
+
+                var isDoubleQuoted = text.StartsWith("\"") && text.EndsWith("\"");
+                var isSingleQuoted = text.StartsWith("'") && text.EndsWith("'");
+
+                if (!isDoubleQuoted && !isSingleQuoted)
+                {
+                    throw new ArgumentException(
+                        "text values must be quoted. Use: show \"text\" or show 'text'"
+                    );
+                }
+
+                var unquoted = text.Substring(1, text.Length - 2);
+                var fullText =
+                    args.Length > 1 ? unquoted + " " + string.Join(" ", args.Skip(1)) : unquoted;
+
+                Console.WriteLine(fullText);
+                return null;
+            };
         }
 
         public void ExecuteFile(string filePath)
@@ -452,20 +455,28 @@ namespace DataScript
         private string[] SplitCommand(string command)
         {
             var parts = new List<string>();
-            var inQuotes = false;
+            var inSingleQuotes = false;
+            var inDoubleQuotes = false;
             var current = "";
 
             for (int i = 0; i < command.Length; i++)
             {
                 var c = command[i];
 
-                if (c == '"')
+                if (c == '"' && !inSingleQuotes)
                 {
-                    inQuotes = !inQuotes;
+                    inDoubleQuotes = !inDoubleQuotes;
+                    current += c;
+                    continue;
+                }
+                if (c == '\'' && !inDoubleQuotes)
+                {
+                    inSingleQuotes = !inSingleQuotes;
+                    current += c;
                     continue;
                 }
 
-                if (c == ' ' && !inQuotes)
+                if (c == ' ' && !inSingleQuotes && !inDoubleQuotes)
                 {
                     if (!string.IsNullOrEmpty(current))
                     {
@@ -479,6 +490,13 @@ namespace DataScript
                 }
             }
 
+            if (inSingleQuotes || inDoubleQuotes)
+            {
+                throw new ArgumentException(
+                    "Unclosed quotes in command. Make sure to close all quotes."
+                );
+            }
+
             if (!string.IsNullOrEmpty(current))
             {
                 parts.Add(current);
@@ -486,7 +504,6 @@ namespace DataScript
 
             return parts.ToArray();
         }
-
         private object CreateTable(string[] args)
         {
             if (args.Length < 2)
@@ -565,7 +582,7 @@ namespace DataScript
         {
             if (args.Length < 2)
                 throw new ArgumentException(
-                    "usage: add [tableName] [col1=value1] [col2=value2] ..."
+                    "usage: add [tableName] [col1=\"value1\"] or [col1='value1'] [col2=value2] ..."
                 );
 
             var tableName = args[0];
@@ -593,9 +610,25 @@ namespace DataScript
                     if (valueText.ToLower() == "null")
                         value = null;
                     else if (column.DataType == typeof(string))
-                        value = valueText;
+                    {
+                        var isDoubleQuoted = valueText.StartsWith("\"") && valueText.EndsWith("\"");
+                        var isSingleQuoted = valueText.StartsWith("'") && valueText.EndsWith("'");
+
+                        if (!isDoubleQuoted && !isSingleQuoted)
+                        {
+                            throw new ArgumentException(
+                                $"String values must be quoted. Use: {colName}=\"{valueText}\" or {colName}='{valueText}'"
+                            );
+                        }
+
+                        value = valueText.Substring(1, valueText.Length - 2);
+                    }
                     else
                         value = Convert.ChangeType(valueText, column.DataType);
+                }
+                catch (ArgumentException)
+                {
+                    throw;
                 }
                 catch
                 {
@@ -613,9 +646,11 @@ namespace DataScript
 
         private object FilterData(string[] args)
         {
-            if (args.Length < 3)
+            if (args.Length < 2)
                 throw new ArgumentException(
-                    "usage: filter [tableName] [columnName] [operator] [value]"
+                    "usage: filter [tableName] [conditions]\n"
+                        + "conditions: [column] [operator] [value] [AND|OR] ...\n"
+                        + "operators: =, !=, >, >=, <, <=, contains, startswith, endswith, isnull, notnull, in, between, like, matches"
                 );
 
             var tableName = args[0];
@@ -623,51 +658,181 @@ namespace DataScript
             if (table == null)
                 throw new ArgumentException($"table not found: {tableName}");
 
-            var columnName = args[1];
-            var op = args[2];
-            var valueText = args.Length > 3 ? args[3] : "null";
+            var conditions = new List<(string column, string op, object value, string logic)>();
+            string currentLogic = "AND";
 
-            if (!table.Columns.TryGetValue(columnName, out var column))
-                throw new ArgumentException($"column not found: {columnName}");
+            for (int i = 1; i < args.Length; i++)
+            {
+                if (i + 2 >= args.Length)
+                    break;
 
-            object value;
+                var columnName = args[i];
+                var op = args[i + 1].ToLower();
+                var valueText = args[i + 2];
+
+                if (!table.Columns.TryGetValue(columnName, out var column))
+                    throw new ArgumentException($"column not found: {columnName}");
+
+                object value = null;
+                if (op == "between" && i + 3 < args.Length)
+                {
+                    var value1 = ParseValue(valueText, column.DataType);
+                    var value2 = ParseValue(args[i + 3], column.DataType);
+                    value = (value1, value2);
+                    i++;
+                }
+                else if (op == "in")
+                {
+                    var values = valueText
+                        .Split(',')
+                        .Select(v => ParseValue(v.Trim(), column.DataType))
+                        .ToList();
+                    value = values;
+                }
+                else if (op != "isnull" && op != "notnull")
+                {
+                    value = ParseValue(valueText, column.DataType);
+                }
+
+                conditions.Add((columnName, op, value, currentLogic));
+
+                if (
+                    i + 3 < args.Length
+                    && (args[i + 3].ToUpper() == "AND" || args[i + 3].ToUpper() == "OR")
+                )
+                {
+                    currentLogic = args[i + 3].ToUpper();
+                    i++;
+                }
+
+                i += 2;
+            }
+
+            Func<DataRow, bool> predicate = row =>
+            {
+                bool result = true;
+                string lastLogic = "AND";
+
+                foreach (var (columnName, op, value, logic) in conditions)
+                {
+                    bool conditionResult = EvaluateCondition(row[columnName], op, value);
+
+                    if (lastLogic == "AND")
+                        result = result && conditionResult;
+                    else
+                        result = result || conditionResult;
+
+                    lastLogic = logic;
+                }
+
+                return result;
+            };
+
+            return table.Filter(predicate);
+        }
+
+        private object ParseValue(string valueText, Type targetType)
+        {
+            if (string.IsNullOrEmpty(valueText) || valueText.ToLower() == "null")
+                return null;
+
             try
             {
-                if (valueText.ToLower() == "null")
-                    value = null;
-                else if (column.DataType == typeof(string))
-                    value = valueText;
+                if (targetType == typeof(string))
+                    return valueText;
+                else if (targetType == typeof(DateTime))
+                    return DateTime.Parse(valueText);
                 else
-                    value = Convert.ChangeType(valueText, column.DataType);
+                    return Convert.ChangeType(valueText, targetType);
             }
             catch
             {
                 throw new ArgumentException(
-                    $"cannot convert value '{valueText}' to {column.DataType.Name}"
+                    $"cannot convert value '{valueText}' to {targetType.Name}"
                 );
             }
+        }
 
-            Func<DataRow, bool> predicate = op.ToLower() switch
+        private bool EvaluateCondition(object rowValue, string op, object filterValue)
+        {
+            if (op == "isnull")
+                return rowValue == null;
+
+            if (op == "notnull")
+                return rowValue != null;
+
+            if (rowValue == null)
+                return false;
+
+            switch (op)
             {
-                "=" => row => ObjectEquals(row[columnName], value),
-                "!=" => row => !ObjectEquals(row[columnName], value),
-                ">" => row => CompareValues(row[columnName], value) > 0,
-                ">=" => row => CompareValues(row[columnName], value) >= 0,
-                "<" => row => CompareValues(row[columnName], value) < 0,
-                "<=" => row => CompareValues(row[columnName], value) <= 0,
-                "contains"
-                  => row => row[columnName]?.ToString()?.Contains(value?.ToString() ?? "") ?? false,
-                "startswith"
-                  => row =>
-                      row[columnName]?.ToString()?.StartsWith(value?.ToString() ?? "") ?? false,
-                "endswith"
-                  => row => row[columnName]?.ToString()?.EndsWith(value?.ToString() ?? "") ?? false,
-                "isnull" => row => row[columnName] == null,
-                "notnull" => row => row[columnName] != null,
-                _ => throw new ArgumentException($"unknown operator: {op}")
-            };
+                case "=":
+                    return ObjectEquals(rowValue, filterValue);
+                case "!=":
+                    return !ObjectEquals(rowValue, filterValue);
+                case ">":
+                    return CompareValues(rowValue, filterValue) > 0;
+                case ">=":
+                    return CompareValues(rowValue, filterValue) >= 0;
+                case "<":
+                    return CompareValues(rowValue, filterValue) < 0;
+                case "<=":
+                    return CompareValues(rowValue, filterValue) <= 0;
+                case "contains":
+                    return rowValue
+                        .ToString()
+                        .Contains(
+                            filterValue?.ToString() ?? "",
+                            StringComparison.OrdinalIgnoreCase
+                        );
+                case "startswith":
+                    return rowValue
+                        .ToString()
+                        .StartsWith(
+                            filterValue?.ToString() ?? "",
+                            StringComparison.OrdinalIgnoreCase
+                        );
+                case "endswith":
+                    return rowValue
+                        .ToString()
+                        .EndsWith(
+                            filterValue?.ToString() ?? "",
+                            StringComparison.OrdinalIgnoreCase
+                        );
+                case "like":
+                    return MatchLikePattern(rowValue.ToString(), filterValue?.ToString() ?? "");
+                case "matches":
+                    return System.Text.RegularExpressions.Regex.IsMatch(
+                        rowValue.ToString(),
+                        filterValue?.ToString() ?? ""
+                    );
+                case "in":
+                    return filterValue is List<object> list
+                        && list.Any(v => ObjectEquals(rowValue, v));
+                case "between":
+                    if (filterValue is ValueTuple<object, object> range)
+                    {
+                        var (min, max) = range;
+                        return CompareValues(rowValue, min) >= 0
+                            && CompareValues(rowValue, max) <= 0;
+                    }
+                    return false;
+                default:
+                    throw new ArgumentException($"unknown operator: {op}");
+            }
+        }
 
-            return table.Filter(predicate);
+        private bool MatchLikePattern(string value, string pattern)
+        {
+            pattern = System.Text.RegularExpressions.Regex
+                .Escape(pattern)
+                .Replace("%", ".*")
+                .Replace("_", ".");
+            return System.Text.RegularExpressions.Regex.IsMatch(
+                value,
+                $"^{pattern}$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase
+            );
         }
 
         private bool ObjectEquals(object a, object b)
@@ -974,7 +1139,6 @@ namespace DataScript
 
             if (!leftTable.Columns.ContainsKey(leftColumnName))
                 throw new ArgumentException(
-
                     $"column not found in {leftTableName}: {leftColumnName}"
                 );
             if (!rightTable.Columns.ContainsKey(rightColumnName))
@@ -1236,18 +1400,9 @@ namespace DataScript
             else
             {
                 var script =
-                @"
-                    // make the users table
-                    create Users Id:int Name:string Age:int
-
-                    // add some data
-                    add Users Id=1 Name=Alice Age=30
-                    add Users Id=2 Name=Bob Age=25
-                    add Users Id=3 Name=Greg Age=69
-
-                    // show the table
-                    show Users
-                ";
+                    @"
+						show 'hello world!'
+			     ";
 
                 interpreter.Execute(script);
             }
