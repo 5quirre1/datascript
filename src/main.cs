@@ -998,7 +998,7 @@ namespace DataScript
                     throw new ArgumentException($"invalid assignment: {args[i]}");
 
                 var colName = assignParts[0];
-                var valueText = assignParts[1];
+                var valueText = ExpandVariables(assignParts[1]);
 
                 if (!table.Columns.TryGetValue(colName, out var column))
                     throw new ArgumentException($"column not found: {colName}");
@@ -1135,6 +1135,8 @@ namespace DataScript
             if (string.IsNullOrEmpty(valueText) || valueText.ToLower() == "null")
                 return null;
 
+            valueText = ExpandVariables(valueText);
+
             try
             {
                 if (targetType == typeof(string))
@@ -1150,6 +1152,22 @@ namespace DataScript
                     $"cannot convert value '{valueText}' to {targetType.Name}"
                 );
             }
+        }
+
+        private string ExpandVariables(string text)
+        {
+            return System.Text.RegularExpressions.Regex.Replace(
+                text,
+                @"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?",
+                m =>
+                {
+                    string varName = m.Groups[1].Value;
+                    if (_variables.TryGetValue(varName, out var varInfo) && varInfo.Value != null)
+                        return varInfo.Value.ToString();
+                    else
+                        return m.Value;
+                }
+            );
         }
 
         private bool EvaluateCondition(object rowValue, string op, object filterValue)
@@ -1813,7 +1831,7 @@ namespace DataScript
                     foreach (var kvp in assignments)
                     {
                         var colName = kvp.Key;
-                        var valRaw = kvp.Value;
+                        var valRaw = ExpandVariables(kvp.Value);
                         if (!table.Columns.TryGetValue(colName, out var column))
                             throw new ArgumentException($"column {colName} not found");
 
@@ -2171,7 +2189,7 @@ namespace DataScript
             {
                 var script =
                     @"
-      show 'hello world!'
+                    show ""greg""
          ";
 
                 interpreter.Execute(script);
@@ -2179,4 +2197,3 @@ namespace DataScript
         }
     }
 }
-
